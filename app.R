@@ -235,33 +235,38 @@ make_forecast_hourly <- function(lat, lon, forecast_date, timezone, days_back = 
 # --- UI ---
 ui <- fluidPage(
   titlePanel("🌡️Temperature forecast"),
-  sidebarLayout(
-    sidebarPanel(
-      textInput("city", "City:", value = "Warsaw"),
-      numericInput("forecast_days", "Days of forecast (max 14):", 7, min = 1, max = 14),
-      actionButton("go", "🔍 Generate forecast", class = "btn-primary"),
-      br(), br(),
-      helpText("This application uses the Open-Meteo API for weather data collection and ARIMA modeling for temperature forecasting."),
-      hr(),
-      verbatimTextOutput("debug_text"),
-      uiOutput("emoji_legend")
+  
+  fluidRow(
+    # SIDEBAR (left)
+    column(
+      width = 3,
+      style = "padding: 20px;",
+      wellPanel(
+        style = "background-color: #f5f5f5; border: 1px solid #ccc; border-radius: 8px; padding: 15px;",
+        textInput("city", "City:", value = "Warsaw"),
+        numericInput("forecast_days", "Days of forecast (max 14):", 7, min = 1, max = 14),
+        actionButton("go", "🔍 Generate forecast", class = "btn btn-primary btn-block"),
+        br(), br(),
+        helpText("This application uses the Open-Meteo API for weather data collection and ARIMA modeling for temperature forecasting."),
+        hr(),
+        verbatimTextOutput("debug_text"),
+        uiOutput("emoji_legend")
+      )
     ),
-    mainPanel(
+    
+    # MAIN PANEL (right)
+    column(
+      width = 9,
+      style = "padding: 20px;",
       uiOutput("locationInfo"),
       uiOutput("emoji_text"),
       tabsetPanel(
-        tabPanel("Daily Forecast",
-                 br(),
-                 plotlyOutput("forecastPlot", height = "500px")),
-        tabPanel("Hourly Forecast",
-                 br(),
-                 plotlyOutput("hourlyTemperaturePlot", height = "500px")),
+        tabPanel("Daily Forecast", br(), plotlyOutput("forecastPlot", height = "500px")),
+        tabPanel("Hourly Forecast", br(), plotlyOutput("hourlyTemperaturePlot", height = "500px")),
         tabPanel("Historical Data",
-                 br(),
-                 DTOutput("historyTable"),
-                 br(),
-                 downloadButton("downloadForecast", "Pobierz Prognozę CSV"),
-                 downloadButton("downloadHistory", "Pobierz Historię CSV"))
+                 br(), DTOutput("historyTable"),
+                 br(), downloadButton("downloadForecast", "Download Forecast CSV"),
+                 downloadButton("downloadHistory", "Download history CSV"))
       )
     )
   )
