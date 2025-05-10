@@ -2,6 +2,12 @@
 This is a powerful weather forecasting application built using Shiny in R, which leverages both historical temperature data and forecast data from the Open Meteo API. 
 The app uses the ARIMA model to predict future temperatures by analyzing temperature data from the past 14 days over the last 10 years (including the current year).
 
+You can explore the interactive Shiny app by clicking the link below:
+
+👉 Launch the App("https://carolineexplores.shinyapps.io/app_r/")
+
+This application allows you to visualize and predict temperature trends using historical data. No installation is required – it runs directly in your browser.
+
 ## Key Features:
 
 Temperature Predictions: Users can generate temperature forecasts (minimum, average, and maximum) for 1 to 14 days ahead for cities worldwide.
