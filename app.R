@@ -20,92 +20,93 @@ library(forecast)
 library(plotly)
 library(lutz)
 
-# --- FUNKCJE ---
+# --- FUNCTIONS ---
+# Function to get coordinates for a city
 get_coordinates <- function(city_name) {
-  url <- paste0("https://geocoding-api.open-meteo.com/v1/search?name=", URLencode(city_name), "&count=1")
-  tryCatch({
-    response <- httr::GET(url)
-    if (httr::http_error(response)) {
-      showNotification(paste("Error:", httr::http_status(response)$message), type = "error")
-      return(NULL)
-    }
-    result <- jsonlite::fromJSON(httr::content(response, "text", encoding = "UTF-8"))
-    if (is.null(result$results) || length(result$results) == 0) {
-      showNotification("City not found.", type = "error")
-      return(NULL)
-    }
-    if (is.data.frame(result$results)) {
-      lat <- result$results$latitude[1]
-      lon <- result$results$longitude[1]
-    } else if (is.list(result$results) && length(result$results) > 0) {
-      lat <- result$results[[1]]$latitude
-      lon <- result$results[[1]]$longitude
-    } else {
-      showNotification("Unexpected response format from geocoding API", type = "error")
-      return(NULL)
-    }
-    if (is.null(lat) || is.null(lon)) {
-      showNotification("Unable to extract coordinates from the response", type = "error")
-      return(NULL)
-    }
-    return(list(lat = lat, lon = lon))
-  }, error = function(e) {
-    showNotification(paste("Error in get_coordinates:", e$message), type = "error")
-    return(NULL)
-  })
+  url <- paste0("https://geocoding-api.open-meteo.com/v1/search?name=", URLencode(city_name), "&count=10")
+  response <- tryCatch(GET(url), error = function(e) return(NULL))
+  if (is.null(response) || http_error(response)) return(NULL)
+  
+  result <- fromJSON(content(response, "text", encoding = "UTF-8"))
+  if (is.null(result$results) || nrow(result$results) == 0) return(NULL)
+  
+  coords <- result$results
+  latitudes <- coords$latitude
+  longitudes <- coords$longitude
+  
+  # Use reverse geocoding to get more reliable regions
+  regions <- mapply(get_region_by_coords, latitudes, longitudes, SIMPLIFY = TRUE)
+  
+  list(
+    cities = coords$name,
+    coords = data.frame(lat = latitudes, lon = longitudes),
+    countries = coords$country,
+    regions = regions
+  )
 }
 
+# Get timezone based on coordinates
 get_timezone <- function(lat, lon) {
-  tryCatch({
-    lutz::tz_lookup_coords(lat, lon, method = "accurate")
-  }, error = function(e) {
-    "UTC"
-  })
+  tz <- tryCatch(tz_lookup_coords(lat, lon, method = "accurate"), error = function(e) "UTC")
+  if (is.na(tz) || tz == "") tz <- "UTC"
+  tz
 }
 
-get_weather_history <- function(lat, lon, forecast_start, days_back = 14, years_back = 10) {
-  all_data <- list()
-  for (i in 0:years_back) {
-    base_day <- forecast_start - years(i) - days(1)
-    start_date <- base_day - days(days_back - 1)
-    end_date <- base_day
-    url <- paste0(
-      "https://archive-api.open-meteo.com/v1/archive?",
-      "latitude=", lat,
-      "&longitude=", lon,
-      "&start_date=", start_date,
-      "&end_date=", end_date,
-      "&daily=temperature_2m_max",
-      "&timezone=auto"
-    )
-    response <- tryCatch({
-      GET(url)
-    }, error = function(e) {
-      showNotification(paste("Error in API:", e$message), type = "error")
-      return(NULL)
-    })
-    if (is.null(response) || http_error(response)) {
-      showNotification(paste("Error fetching historical data for", format(start_date)), type = "warning")
-      next
-    }
-    data <- tryCatch({
-      fromJSON(content(response, "text", encoding = "UTF-8"))
-    }, error = function(e) {
-      showNotification(paste("Error parssing JSON:", e$message), type = "error")
-      return(NULL)
-    })
-    if (!is.null(data$daily)) {
-      df <- data.frame(
-        date = as_date(data$daily$time),
-        temp_max = data$daily$temperature_2m_max,
-        year = year(as_date(data$daily$time))
-      )
-      all_data[[length(all_data) + 1]] <- df
-    }
+# Reverse geocoding to get region by coordinates
+get_region_by_coords <- function(lat, lon) {
+  url <- paste0("https://nominatim.openstreetmap.org/reverse?format=json&lat=", lat, "&lon=", lon, "&zoom=10&addressdetails=1")
+  result <- tryCatch(jsonlite::fromJSON(url, flatten = TRUE), error = function(e) NULL)
+  if (!is.null(result$address$state)) {
+    return(result$address$state)
+  } else if (!is.null(result$address$county)) {
+    return(result$address$county)
+  } else {
+    return("Unknown")
   }
-  if (length(all_data) > 0) bind_rows(all_data) else NULL
 }
 
+# Historical weather data
+get_weather_history <- function(lat, lon, forecast_start) {
+  all_data <- list()
+  
+  # Calculate date ranges - get 5 years of data
+  end_date <- forecast_start - days(2)  # yesterday
+  start_date <- end_date - years(5)     # 5 years ago
+  
+  # Make a single API call for the entire period
+  url <- paste0("https://archive-api.open-meteo.com/v1/archive?latitude=", lat,
+                "&longitude=", lon,
+                "&start_date=", start_date,
+                "&end_date=", end_date,
+                "&daily=temperature_2m_max,temperature_2m_min",
+                "&timezone=auto")
+  
+  response <- tryCatch(GET(url), error = function(e) NULL)
+  if (is.null(response) || http_error(response)) {
+    return(NULL)
+  }
+  
+  data <- tryCatch(fromJSON(content(response, "text", encoding = "UTF-8")), 
+                   error = function(e) NULL)
+  
+  if (!is.null(data$daily)) {
+    df <- data.frame(
+      date = as_date(data$daily$time),
+      temp_max = data$daily$temperature_2m_max,
+      temp_min = data$daily$temperature_2m_min,
+      year = year(as_date(data$daily$time))
+    )
+    
+    # Add day of year for seasonal analysis
+    df$doy <- yday(df$date)
+    
+    return(df %>% arrange(desc(date)))
+  }
+  
+  return(NULL)
+}
+
+# Weather forecast
 get_weather_forecast <- function(lat, lon, start_date, end_date, timezone) {
   url <- paste0(
     "https://api.open-meteo.com/v1/forecast?",
@@ -117,27 +118,10 @@ get_weather_forecast <- function(lat, lon, start_date, end_date, timezone) {
     "&end_date=", end_date,
     "&timezone=", URLencode(timezone)
   )
-  response <- tryCatch({
-    GET(url)
-  }, error = function(e) {
-    showNotification(paste("Error in API:", e$message), type = "error")
-    return(NULL)
-  })
-  if (is.null(response) || http_error(response)) {
-    showNotification("Error in downloading forecasting data", type = "error")
-    return(NULL)
-  }
-  data <- tryCatch({
-    fromJSON(content(response, "text", encoding = "UTF-8"))
-  }, error = function(e) {
-    showNotification(paste("Error parssing JSON:", e$message), type = "error")
-    return(NULL)
-  })
-  if (is.null(data$hourly) || is.null(data$daily)) {
-    showNotification("Invalid data format from the API", type = "error")
-    return(NULL)
-  }
-  # Time parssing
+  response <- tryCatch(GET(url), error = function(e) NULL)
+  if (is.null(response) || http_error(response)) return(NULL)
+  data <- tryCatch(fromJSON(content(response, "text", encoding = "UTF-8")), error = function(e) NULL)
+  if (is.null(data$hourly) || is.null(data$daily)) return(NULL)
   hourly_df <- data.frame(
     datetime = lubridate::ymd_hm(data$hourly$time, tz = timezone),
     temperature = data$hourly$temperature_2m
@@ -147,37 +131,98 @@ get_weather_forecast <- function(lat, lon, start_date, end_date, timezone) {
     temp_max = data$daily$temperature_2m_max,
     temp_min = data$daily$temperature_2m_min
   )
-  return(list(hourly = hourly_df, daily = daily_df))
+  list(hourly = hourly_df, daily = daily_df)
 }
 
-make_forecast_arima <- function(df, h, var) {
-  df <- arrange(df, date)
-  if (nrow(df) < 10) {
-    showNotification("Insufficient historical data for accurate ARIMA modeling", type = "warning")
+# ARIMA modeling
+make_forecast_arima <- function(df, h, vars = c("temp_max", "temp_min")) {
+  tryCatch({
+    df <- arrange(df, date)
+    if (nrow(df) < 10) return(NULL)
+    
+    result <- data.frame(
+      date = seq.Date(from = max(df$date) + 2, by = "day", length.out = h)
+    )
+    
+    # Process each temperature type (max and min) separately
+    for (var in vars) {
+      print(paste("Starting processing for:", var)) 
+      
+      if (!var %in% names(df)) {
+        print(paste("Missing variable:", var))
+        next
+      }
+      
+      # Remove NA values and check length
+      ts_df <- df %>%
+        select(date, !!sym(var)) %>%
+        filter(!is.na(!!sym(var)))
+      
+      if (nrow(ts_df) < 10) {
+        print(paste("Insufficient data for:", var))
+        next
+      }
+      
+      # Create time series with seasons
+      ts_data <- ts(ts_df[[var]], 
+                    frequency = 365/12,
+                    start = c(year(min(ts_df$date)), isoweek(min(ts_df$date))))
+      
+      model <- tryCatch({
+        print(paste("Fitting ARIMA model for:", var))  
+        auto.arima(ts_data, 
+                   seasonal = TRUE,
+                   D = 1,
+                   max.P = 1,
+                   max.Q = 1,
+                   stepwise = TRUE,
+                   approximation = TRUE)
+      }, error = function(e) {
+        print(paste("ARIMA error for", var, ":", e$message))
+        NULL
+      })
+      
+      if (!is.null(model)) {
+        print(paste("Successfully fit ARIMA model for:", var))  
+        
+        fc <- tryCatch({
+          forecast(model, h = h)
+        }, error = function(e) {
+          print(paste("Forecast error for", var, ":", e$message))
+          NULL
+        })
+        
+        if (!is.null(fc)) {
+          print(paste("Generated forecast for:", var)) 
+          
+          # Store predictions with clear naming
+          col_prefix <- if(var == "temp_max") "temp_max" else "temp_min"
+          result[[paste0(col_prefix, "_prediction")]] <- round(fc$mean, 1)
+          result[[paste0(col_prefix, "_lower")]] <- round(fc$lower[, 1], 1)
+          result[[paste0(col_prefix, "_upper")]] <- round(fc$upper[, 1], 1)
+          
+          print(paste("✅ ARIMA complete for:", var))
+        } else {
+          print(paste("❌ forecast() returned NULL for:", var))
+        }
+      } else {
+        print(paste("❌ auto.arima() failed for:", var))
+      }
+    }
+    
+    
+    # Return result if we have at least one prediction
+    if (any(c("temp_max_prediction", "temp_min_prediction") %in% names(result))) {
+      return(result)
+    }
+    
+    print("No predictions generated")
     return(NULL)
-  }
-  df$trend <- as.numeric(df$date - min(df$date))
-  ts_data <- ts(df[[var]], frequency = 365/30)
-  model <- tryCatch({
-    auto.arima(ts_data, xreg = df$trend, seasonal = FALSE)
+    
   }, error = function(e) {
-    showNotification(paste("Error in ARIMA modeling:", e$message), type = "warning")
+    print(paste("General error:", e$message))
     return(NULL)
   })
-  if (is.null(model)) return(NULL)
-  future_trend <- max(df$trend) + seq_len(h)
-  fc <- tryCatch({
-    forecast(model, xreg = future_trend, h = h)
-  }, error = function(e) {
-    showNotification(paste("Error in forecast:", e$message), type = "warning")
-    return(NULL)
-  })
-  data.frame(
-    date = seq.Date(from = max(df$date) + 1, by = "day", length.out = h),
-    prediction = round(fc$mean, 1),
-    lower = round(fc$lower[, 1], 1),
-    upper = round(fc$upper[, 1], 1)
-  )
 }
 
 make_forecast_hourly <- function(lat, lon, forecast_date, timezone, days_back = 14) {
@@ -234,7 +279,46 @@ make_forecast_hourly <- function(lat, lon, forecast_date, timezone, days_back = 
 
 # --- UI ---
 ui <- fluidPage(
-  titlePanel("🌡️Temperature forecast"),
+  titlePanel("🌡️Temperature Forecast"),
+  
+  # CSS Styles
+  tags$style(HTML("
+    .custom-text-input {
+      background-color: #f5f5f5;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 15px;
+    }
+    .city-select {
+      margin-top: 10px;
+      margin-bottom: 10px;
+    }
+    .selectize-input {
+      min-height: 38px;
+      padding: 8px 12px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+    .selectize-dropdown {
+      border-radius: 4px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+    .selectize-dropdown-content {
+      max-height: 300px;
+    }
+    .selectize-dropdown-content .option {
+      padding: 8px 12px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .selectize-dropdown-content .option:hover {
+      background-color: #f5f5f5;
+    }
+    .alert {
+      padding: 10px;
+      margin-top: 10px;
+      border-radius: 4px;
+    }
+  ")),
   
   fluidRow(
     # SIDEBAR (left)
@@ -243,9 +327,26 @@ ui <- fluidPage(
       style = "padding: 20px;",
       wellPanel(
         style = "background-color: #f5f5f5; border: 1px solid #ccc; border-radius: 8px; padding: 15px;",
-        textInput("city", "City:", value = "Warsaw"),
-        numericInput("forecast_days", "Days of forecast (max 14):", 7, min = 1, max = 14),
-        actionButton("go", "🔍 Generate forecast", class = "btn btn-primary btn-block"),
+        div(
+          class = "custom-text-input",
+          textInput("city", "Search city:",
+                    value = "",
+                    placeholder = "Type city name..."),
+          style = "margin-bottom: 10px;"
+        ),
+        actionButton("search_button", "Search",
+                     class = "btn btn-primary btn-block",
+                     style = "margin-bottom: 10px;"),
+        uiOutput("city_select"),
+        tags$div(
+          id = "search-results",
+          style = "max-height: 200px; overflow-y: auto;"
+        ),
+        numericInput("forecast_days",
+                     "Days of forecast (max 10):",
+                     7, min = 1, max = 10),
+        actionButton("go", "🔍 Generate forecast",
+                     class = "btn btn-primary btn-block"),
         br(), br(),
         helpText("This application uses the Open-Meteo API for weather data collection and ARIMA modeling for temperature forecasting."),
         hr(),
@@ -261,12 +362,18 @@ ui <- fluidPage(
       uiOutput("locationInfo"),
       uiOutput("emoji_text"),
       tabsetPanel(
-        tabPanel("Daily Forecast", br(), plotlyOutput("forecastPlot", height = "500px")),
-        tabPanel("Hourly Forecast", br(), plotlyOutput("hourlyTemperaturePlot", height = "500px")),
+        tabPanel("Daily Forecast",
+                 br(),
+                 plotlyOutput("forecastPlot", height = "500px")),
+        tabPanel("Hourly Forecast",
+                 br(),
+                 plotlyOutput("hourlyTemperaturePlot", height = "500px")),
         tabPanel("Historical Data",
-                 br(), DTOutput("historyTable"),
-                 br(), downloadButton("downloadForecast", "Download Forecast CSV"),
-                 downloadButton("downloadHistory", "Download history CSV"))
+                 br(),
+                 DTOutput("historyTable"),
+                 br(),
+                 downloadButton("downloadForecast", "Download Forecast CSV"),
+                 downloadButton("downloadHistory", "Download History CSV"))
       )
     )
   )
@@ -274,132 +381,332 @@ ui <- fluidPage(
 
 # --- SERVER ---
 server <- function(input, output, session) {
+  # Reactive values
   forecast_data <- reactiveVal(NULL)
   history_data <- reactiveVal(NULL)
   location_info <- reactiveVal(NULL)
   hourly_forecast <- reactiveVal(NULL)
   arima_forecast <- reactiveVal(NULL)
+  locations_df <- reactiveVal(NULL)
   
-  observeEvent(input$go, {
+  # Function to reset all reactive values
+  reset_reactives <- function() {
+    forecast_data(NULL)
+    history_data(NULL)
+    location_info(NULL)
+    hourly_forecast(NULL)
+    arima_forecast(NULL)
+  }
+  
+  # Search for cities and update dropdown
+  observeEvent(input$search_button, {
     req(input$city)
-    withProgress(message = 'Generate forecast...', {
+    # Reset all reactive values when searching for a new city
+    reset_reactives()
+    
+    withProgress(message = 'Searching cities...', {
       city_name <- input$city
-      forecast_days <- min(input$forecast_days, 14)
-      incProgress(0.1, detail = "Searching for coordinates")
-      coordinates <- get_coordinates(city_name)
-      if (is.null(coordinates)) {
-        showNotification("Unable to find coordinates for the city", type = "error")
+      result <- get_coordinates(city_name)
+      
+      if (!is.null(result) && length(result$cities) > 0) {
+        # Create location labels
+        city_labels <- mapply(
+          function(city, region, country) {
+            region <- if (is.na(region) || region == "") "Unknown" else region
+            sprintf("%s (%s, %s)", city, region, country)
+          },
+          result$cities,
+          result$regions,
+          result$countries,
+          SIMPLIFY = TRUE
+        )
+        
+        # Store location data
+        locations_df(data.frame(
+          index = seq_along(result$cities),
+          city = result$cities,
+          region = result$regions,
+          country = result$countries,
+          lat = result$coords$lat,
+          lon = result$coords$lon,
+          stringsAsFactors = FALSE
+        ))
+        
+        # Update select input
+        output$city_select <- renderUI({
+          selectInput("selected_city",
+                      "Select city:",
+                      choices = setNames(seq_along(city_labels), city_labels),
+                      selected = 1,
+                      width = "100%")
+        })
+      } else {
+        output$city_select <- renderUI({
+          div(
+            class = "alert alert-warning",
+            "No cities found. Please try a different search."
+          )
+        })
+      }
+    })
+  })
+  
+  # City selection observer
+  observeEvent(input$selected_city, {
+    req(input$selected_city, locations_df())
+    
+    # Reset forecast-related values when selecting a new city
+    forecast_data(NULL)
+    history_data(NULL)
+    hourly_forecast(NULL)
+    arima_forecast(NULL)
+    
+    idx <- as.numeric(input$selected_city)
+    loc <- locations_df()[idx, ]
+    
+    location_info(list(
+      city = loc$city,
+      lat = loc$lat,
+      lon = loc$lon,
+      region = loc$region,
+      country = loc$country
+    ))
+  })
+  
+  # Generate forecasts
+  observeEvent(input$go, {
+    req(location_info())  # Ensure location info is available
+    info <- location_info()  # Get the selected city's details
+    
+    withProgress(message = 'Generate forecast...', {
+      forecast_days <- min(input$forecast_days, 10)
+      
+      # Validate coordinates
+      if (is.null(info$lat) || is.null(info$lon)) {
+        showNotification("Invalid coordinates for the selected city.", type = "error")
         return()
       }
-      lat <- coordinates$lat
-      lon <- coordinates$lon
-      incProgress(0.1, detail = "Download timezone")
-      timezone <- get_timezone(lat, lon)
-      location_info(list(city = city_name, lat = lat, lon = lon, timezone = timezone))
-      forecast_date <- Sys.Date()
-      forecast_end <- forecast_date + days(forecast_days - 1)
-      incProgress(0.2, detail = "Download historical data")
-      hist_data <- get_weather_history(lat, lon, forecast_date)
+      
+      # Fetch timezone
+      incProgress(0.1, detail = "Fetching timezone")
+      timezone <- get_timezone(info$lat, info$lon)
+      location_info(modifyList(info, list(timezone = timezone)))
+      
+      # Fetch historical data
+      incProgress(0.2, detail = "Fetching historical data")
+      hist_data <- get_weather_history(info$lat, info$lon, Sys.Date())
       history_data(hist_data)
       if (is.null(hist_data) || nrow(hist_data) < 10) {
-        showNotification("Insufficient historical data", type = "warning")
-      } else {
-        incProgress(0.2, detail = "Building ARIMA model")
-        fc_arima <- make_forecast_arima(hist_data, forecast_days, "temp_max")
-        arima_forecast(fc_arima)
-        if (is.null(fc_arima)) {
-          showNotification("Unable to generate ARIMA forecast", type = "error")
-        }
+        showNotification("Insufficient historical data for ARIMA model.", type = "warning")
+        return()
       }
-      incProgress(0.2, detail = "Download API forecast")
-      api_forecast <- get_weather_forecast(lat, lon, forecast_date, forecast_end, timezone)
+      
+      # Build ARIMA forecast
+      incProgress(0.2, detail = "Building ARIMA model")
+      fc_arima <- make_forecast_arima(hist_data, forecast_days, c("temp_max", "temp_min"))
+      arima_forecast(fc_arima)
+      if (is.null(fc_arima)) {
+        showNotification("Failed to generate ARIMA forecast.", type = "error")
+        return()
+      }
+      
+      # Fetch API forecast
+      incProgress(0.2, detail = "Fetching API forecast")
+      forecast_end <- Sys.Date() + forecast_days - 1
+      api_forecast <- get_weather_forecast(info$lat, info$lon, Sys.Date(), forecast_end, timezone)
       forecast_data(api_forecast)
-      incProgress(0.2, detail = "Generate hourly forecast")
-      hourly_fc <- make_forecast_hourly(lat, lon, forecast_date, timezone)
+      
+      # Generate hourly forecast
+      incProgress(0.2, detail = "Generating hourly forecast")
+      hourly_fc <- make_forecast_hourly(info$lat, info$lon, Sys.Date(), timezone)
       hourly_forecast(hourly_fc)
     })
   })
   
+  # Render location info
   output$locationInfo <- renderUI({
     info <- location_info()
     if (!is.null(info)) {
       tags$div(
         style = "margin-bottom: 15px;",
         tags$h4(paste("📍", info$city)),
-        tags$p(paste("Coordinates:", round(info$lat, 4), ", ", round(info$lon, 4))),
-        tags$p(paste("Timezone:", info$timezone))
+        tags$p(paste("Country:", ifelse(!is.null(info$country), info$country, "Unknown"))),
+        tags$p(paste("Region:", ifelse(!is.null(info$region), info$region, "Unknown"))),
+        tags$p(paste("Coordinates:", round(info$lat, 4), ",", round(info$lon, 4)))
       )
     }
   })
   
+  # Render emoji text
   output$emoji_text <- renderUI({
     fc <- arima_forecast()
     hist <- history_data()
+    
     if (!is.null(fc) && !is.null(hist) && nrow(hist) > 0) {
       recent_hist <- hist %>%
         filter(year(date) >= year(Sys.Date()) - 3) %>%
         group_by(doy = yday(date)) %>%
-        summarise(avg_temp = mean(temp_max, na.rm = TRUE))
+        summarise(
+          avg_max = mean(temp_max, na.rm = TRUE),
+          avg_min = mean(temp_min, na.rm = TRUE)
+        )
+      
       forecast_doys <- yday(fc$date)
-      avg_historical_temp <- mean(recent_hist$avg_temp[match(forecast_doys, recent_hist$doy)], na.rm = TRUE)
-      avg_forecast_temp <- mean(fc$prediction, na.rm = TRUE)
-      diff <- avg_forecast_temp - avg_historical_temp
+      avg_historical_max <- mean(recent_hist$avg_max[match(forecast_doys, recent_hist$doy)], na.rm = TRUE)
+      avg_forecast_max <- mean(fc$temp_max_prediction, na.rm = TRUE)
+      
+      diff <- avg_forecast_max - avg_historical_max
       emoji <- if (diff > 2) {
         "☀️😎 Warmer than usual!"
       } else if (diff < -2) {
         "🥶☁️ Colder than usual!"
       } else {
-        "😐🌤 The same as usual."
+        "😐🌤 Similar to usual temperatures."
       }
-      tags$div(style = "font-size: 24px; font-weight: bold; margin: 15px 0;", emoji)
+      
+      tags$div(
+        style = "font-size: 24px; font-weight: bold; margin: 15px 0;",
+        emoji
+      )
     }
   })
-  
-  output$forecastPlot <- renderPlotly({
-    fc <- arima_forecast()
-    api_fc <- forecast_data()
-    if (is.null(fc) && is.null(api_fc)) {
-      return(NULL)
-    }
-    # English locals for plot
-    old_locale <- Sys.getlocale("LC_TIME")
-    Sys.setlocale("LC_TIME", "C")
-    
-    if (!is.null(fc)) {
-      fc_long <- pivot_longer(fc, cols = c("prediction", "lower", "upper"),
-                              names_to = "type", values_to = "value")
-      p <- ggplot(fc_long, aes(x = date, y = value, color = type)) +
-        geom_line() + geom_point() +
-        scale_color_manual(values = c("prediction" = "darkgreen", "lower" = "blue", "upper" = "red")) +
-        labs(title = "📈 Daily temperature forecast",
-             subtitle = paste("ARIMA model with prediction intervals"),
-             x = "Date", y = "Temperature (°C)", color = "Type") +
-        theme_minimal() +
-        scale_x_date(date_labels = "%d %b", date_breaks = "1 day")
-      if (!is.null(api_fc) && !is.null(api_fc$daily)) {
-        api_daily <- api_fc$daily %>%
-          select(date, temp_max) %>%
-          mutate(type = "API forecast") %>%
-          rename(value = temp_max)
-        p <- p + geom_line(data = api_daily, aes(x = date, y = value, color = "API forecast"), linetype = "dashed") +
-          scale_color_manual(values = c("prediction" = "darkgreen", "lower" = "blue", "upper" = "red", "API forecast" = "purple"))
+
+          output$forecastPlot <- renderPlotly({
+            fc <- arima_forecast()
+            api_fc <- forecast_data()
+            
+            if (is.null(fc) && is.null(api_fc)) {
+              return(NULL)
+            }
+            
+            # Set locale to English (US)
+            old_locale <- Sys.getlocale("LC_TIME")
+            Sys.setlocale("LC_TIME", "en_US.UTF-8")
+            
+            tryCatch({
+              if (!is.null(api_fc) && !is.null(api_fc$daily)) {
+                # Create API forecast data
+                api_daily_long <- api_fc$daily %>%
+                  select(date, temp_max, temp_min) %>%
+                  pivot_longer(
+                    cols = c(temp_max, temp_min),
+                    names_to = "metric",
+                    values_to = "value"
+                  ) %>%
+                  mutate(
+                    type = if_else(metric == "temp_max", "API Maximum", "API Minimum"),
+                    date = as.Date(date)
+                  ) %>%
+                  filter(date >= Sys.Date())
+                
+                # Base plot with API data
+                p <- ggplot() +
+                  geom_line(data = api_daily_long, 
+                            aes(x = date, y = value, color = type),
+                            size = 1) +
+                  geom_point(data = api_daily_long,
+                             aes(x = date, y = value, color = type),
+                             size = 3)
+                
+                # Add ARIMA predictions if available
+                if (!is.null(fc)) {
+                  fc_long <- data.frame()
+                  
+                  # Add max temperature prediction if available
+                  if ("temp_max_prediction" %in% names(fc)) {
+                    fc_long <- bind_rows(
+                      fc_long,
+                      data.frame(
+                        date = fc$date,
+                        value = fc$temp_max_prediction,
+                        type = "ARIMA Maximum"
+                      )
+                    )
+                  }
+                  
+                  # Add min temperature prediction if available
+                  if ("temp_min_prediction" %in% names(fc)) {
+                    fc_long <- bind_rows(
+                      fc_long,
+                      data.frame(
+                        date = fc$date,
+                        value = fc$temp_min_prediction,
+                        type = "ARIMA Minimum"
+                      )
+                    )
+                  }
+                  
+                  if (nrow(fc_long) > 0) {
+                    p <- p +
+                      geom_line(data = fc_long,
+                                aes(x = date, y = value, color = type),
+                                linetype = "dashed",
+                                size = 1) +
+                      geom_point(data = fc_long,
+                                 aes(x = date, y = value, color = type),
+                                 shape = 1,
+                                 size = 3)
+                  }
+        }
+        
+        # Add styling
+        p <- p +
+          scale_color_manual(
+            values = c(
+              "API Maximum" = "red",
+              "API Minimum" = "blue",
+              "ARIMA Maximum" = "darkred",
+              "ARIMA Minimum" = "darkblue"
+            ),
+            name = "Temperature Type",
+            labels = c(
+              "API Maximum" = "API Forecast (Max)",
+              "API Minimum" = "API Forecast (Min)",
+              "ARIMA Maximum" = "ARIMA Prediction (Max)",
+              "ARIMA Minimum" = "ARIMA Prediction (Min)"
+            )
+          ) +
+          labs(
+            title = "📈 Daily Temperature Forecast",
+            subtitle = paste("Forecast from", format(Sys.Date(), "%d %B %Y")),
+            x = "Date",
+            y = "Temperature (°C)"
+          ) +
+          theme_minimal() +
+          theme(
+            plot.title = element_text(size = 16, face = "bold"),
+            plot.subtitle = element_text(size = 12),
+            axis.title = element_text(size = 12),
+            legend.title = element_text(size = 12),
+            legend.text = element_text(size = 10)
+          ) +
+          scale_x_date(
+            date_labels = "%d %b",
+            date_breaks = "1 day",
+            limits = c(Sys.Date(), max(fc$date))
+          )
+        
+        plotly_obj <- ggplotly(p) %>%
+          layout(
+            showlegend = TRUE,
+            legend = list(
+              orientation = "h",
+              y = -0.2,
+              x = 0.5,
+              xanchor = "center"
+            ),
+            hovermode = "x unified"
+          )
+        
+        Sys.setlocale("LC_TIME", old_locale)
+        return(plotly_obj)
       }
-      plotly_obj <- ggplotly(p) %>% layout(legend = list(orientation = "h", y = -0.2))
-    } else if (!is.null(api_fc) && !is.null(api_fc$daily)) {
-      api_daily <- api_fc$daily
-      p <- ggplot(api_daily, aes(x = date)) +
-        geom_line(aes(y = temp_max, color = "Maximum")) +
-        geom_line(aes(y = temp_min, color = "Minimum")) +
-        labs(title = "📈 Daily temperature forecast",
-             subtitle = "Data API forecast",
-             x = "Date", y = "Temperature (°C)", color = "Type") +
-        theme_minimal() +
-        scale_x_date(date_labels = "%d %b", date_breaks = "1 day") +
-        scale_color_manual(values = c("Maximum" = "red", "Minimum" = "blue"))
-      plotly_obj <- ggplotly(p) %>% layout(legend = list(orientation = "h", y = -0.2))
-    }
-    Sys.setlocale("LC_TIME", old_locale)
-    plotly_obj
+      
+      return(NULL)
+    }, error = function(e) {
+      Sys.setlocale("LC_TIME", old_locale)
+      return(NULL)
+    })
   })
   
   output$hourlyTemperaturePlot <- renderPlotly({
@@ -459,7 +766,7 @@ server <- function(input, output, session) {
       layout(
         title = list(
           text = paste0("Hourly forecast for ", format(Sys.Date(), "%A, %d %B"), " in ", info$city),
-          font = list(size = 22)
+          font = list(size = 16)
         ),
         xaxis = list(
           title = "Hour",
@@ -473,7 +780,7 @@ server <- function(input, output, session) {
         legend = list(
           orientation = "h",
           yanchor = "bottom",
-          y = -0.15,
+          y = -0.25,
           xanchor = "center",
           x = 0.5
         ),
@@ -503,13 +810,22 @@ server <- function(input, output, session) {
     if (!is.null(hist)) {
       hist <- hist %>%
         arrange(desc(date)) %>%
-        select(date, year, temp_max)
+        select(date, year, temp_max, temp_min) %>%
+        rename(
+          "Date" = date,
+          "Year" = year,
+          "Max Temp (°C)" = temp_max,
+          "Min Temp (°C)" = temp_min
+        )
+      
       datatable(hist,
-                options = list(pageLength = 10,
-                               order = list(list(0, 'desc')),
-                               scrollY = "400px"),
-                caption = "Historical Max Temperatures") %>%
-        formatRound('temp_max', 1)
+                options = list(
+                  pageLength = 10,
+                  order = list(list(0, 'desc')),
+                  scrollY = "400px"
+                ),
+                caption = "Historical Temperatures") %>%
+        formatRound(c('Max Temp (°C)', 'Min Temp (°C)'), 1)
     }
   })
   
