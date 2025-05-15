@@ -32,4 +32,4 @@ Interactive Table: A table displays the historical data used in the forecast mod
 CSV Export: The app gives users the ability to export the forecast data or historical data to CSV files for further analysis or record-keeping.
 
 # Use Case: 
-The app is ideal for users looking to get accurate and reliable weather forecasts for up to 14 days, based on a combination of historical data and advanced statistical modeling. Whether you're planning a trip, managing outdoor events, or simply curious about future weather trends, this app provides valuable insights into the expected weather conditions.
+The app is ideal for users looking to get accurate and reliable weather forecasts for up to 10 days, based on a combination of historical data and advanced statistical modeling. Whether you're planning a trip, managing outdoor events, or simply curious about future weather trends, this app provides valuable insights into the expected weather conditions.
