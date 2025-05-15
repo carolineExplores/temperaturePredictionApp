@@ -398,6 +398,8 @@ server <- function(input, output, session) {
     arima_forecast(NULL)
   }
   
+  `%||%` <- function(x, y) if (is.null(x)) y else x
+  
   # Search for cities and update dropdown
   observeEvent(input$search_button, {
     req(input$city)
@@ -709,89 +711,157 @@ server <- function(input, output, session) {
     })
   })
   
-  output$hourlyTemperaturePlot <- renderPlotly({
-    api_fc <- forecast_data()
-    hourly_fc <- hourly_forecast()
-    info <- location_info()
-    if (is.null(api_fc) || is.null(hourly_fc) || is.null(info)) {
-      return(NULL)
-    }
-    
-    # Set locale to English (US)
-    old_locale <- Sys.getlocale("LC_TIME")
-    Sys.setlocale("LC_TIME", "en_US.UTF-8")
-    
-    first_day_data <- api_fc$hourly %>%
-      filter(date(datetime) == Sys.Date())
-    
-    plot_data <- full_join(
-      first_day_data %>% rename(api_temperature = temperature),
-      hourly_fc,
-      by = "datetime"
-    )
-    
-    plot_data <- plot_data %>% arrange(datetime)
-    all_hours <- seq.POSIXt(from = as.POSIXct(paste(Sys.Date(), "00:00:00"), tz = info$timezone),
-                            by = "hour", length.out = 24)
-    plot_data <- right_join(data.frame(datetime = all_hours), plot_data, by = "datetime") %>%
-      arrange(datetime)
-    
-    plot_data$hour_label <- format(plot_data$datetime, "%H:%M")
-    
-    p <- plot_ly() %>%
-      add_trace(
-        data = plot_data,
-        x = ~datetime,
-        y = ~api_temperature,
-        type = "scatter",
-        mode = "lines+markers",
-        name = "Forecast API",
-        line = list(color = "#2E86C1", width = 3),
-        marker = list(size = 8, symbol = "circle"),
-        text = ~hour_label,
-        hovertemplate = "%{text}<br>%{y}°C<extra>Forecast API</extra>"
-      ) %>%
-      add_trace(
-        data = plot_data,
-        x = ~datetime,
-        y = ~predicted_temperature,
-        type = "scatter",
-        mode = "lines+markers",
-        name = "Historical mean",
-        line = list(color = "#E74C3C", width = 2.5, dash = "dash"),
-        marker = list(size = 8, symbol = "diamond"),
-        text = ~hour_label,
-        hovertemplate = "%{text}<br>%{y}°C<extra>Average temperature recent days</extra>"
-      ) %>%
-      layout(
-        title = list(
-          text = paste0("Hourly forecast for ", format(Sys.Date(), "%A, %d %B"), " in ", info$city),
-          font = list(size = 16)
-        ),
-        xaxis = list(
-          title = "Hour",
-          tickformat = "%H:%M",
-          type = "date"
-        ),
-        yaxis = list(
-          title = "Temperature (°C)"
-        ),
-        plot_bgcolor = "rgba(250, 250, 250, 0.8)",
-        legend = list(
-          orientation = "h",
-          yanchor = "bottom",
-          y = -0.25,
-          xanchor = "center",
-          x = 0.5
-        ),
-        hovermode = "x unified"
-      )
-    
-    # Reset locale to original
-    Sys.setlocale("LC_TIME", old_locale)
-    
-    return(p)
-  })
+          
+          output$hourlyTemperaturePlot <- renderPlotly({
+            api_fc <- forecast_data()
+            hourly_fc <- hourly_forecast()
+            info <- location_info()
+            if (is.null(api_fc) || is.null(hourly_fc) || is.null(info)) {
+              return(NULL)
+            }
+            
+            # Set locale to English (US)
+            old_locale <- Sys.getlocale("LC_TIME")
+            Sys.setlocale("LC_TIME", "en_US.UTF-8")
+            
+            # Get timezone from location info
+            tz <- info$timezone %||% "UTC"
+            
+            # Create current date in correct timezone
+            current_date <- as.Date(with_tz(Sys.time(), tz))
+            
+            # Create proper start and end times in the correct timezone
+            start_time <- as.POSIXct(paste(current_date, "00:00:00"), tz = tz)
+            end_time <- start_time + hours(23)  # End at 23:00
+            
+            # Create sequence of 24 hours
+            all_hours <- seq.POSIXt(
+              from = start_time,
+              to = end_time,
+              by = "hour"
+            )
+            
+            # Prepare API forecast data with explicit timezone handling
+            first_day_data <- api_fc$hourly %>%
+              mutate(
+                datetime = force_tz(floor_date(datetime, "hour"), tz),
+                date = as.Date(datetime, tz = tz)
+              ) %>%
+              filter(date == current_date) %>%
+              select(datetime, temperature)
+            
+            # Prepare historical forecast data with explicit timezone handling
+            historical_data <- hourly_fc %>%
+              mutate(
+                datetime = force_tz(floor_date(datetime, "hour"), tz),
+                date = as.Date(datetime, tz = tz)
+              ) %>%
+              filter(date == current_date)
+            
+            # Create complete dataset
+            plot_data <- data.frame(datetime = all_hours) %>%
+              left_join(
+                first_day_data %>% 
+                  mutate(api_temperature = round(temperature, 2)) %>%
+                  select(-temperature),
+                by = "datetime"
+              ) %>%
+              left_join(
+                historical_data %>% 
+                  mutate(predicted_temperature = round(predicted_temperature, 2)) %>%
+                  select(datetime, predicted_temperature),
+                by = "datetime"
+              ) %>%
+              arrange(datetime)
+            
+            # Create hour labels in correct timezone
+            plot_data$hour_label <- format(plot_data$datetime, format = "%H:%M", tz = tz)
+            
+            # Create plot
+            p <- plot_ly() %>%
+              add_trace(
+                data = plot_data,
+                x = ~datetime,
+                y = ~api_temperature,
+                type = "scatter",
+                mode = "lines+markers",
+                name = "Forecast API",
+                line = list(color = "#2E86C1", width = 3),
+                marker = list(size = 8, symbol = "circle"),
+                text = ~hour_label,
+                hovertemplate = paste(
+                  "Time: %{text}<br>",
+                  "Temperature: %{y:.2f}°C<br>",
+                  "<extra>Forecast API</extra>"
+                )
+              ) %>%
+              add_trace(
+                data = plot_data,
+                x = ~datetime,
+                y = ~predicted_temperature,
+                type = "scatter",
+                mode = "lines+markers",
+                name = "Historical mean",
+                line = list(color = "#E74C3C", width = 2.5, dash = "dash"),
+                marker = list(size = 8, symbol = "diamond"),
+                text = ~hour_label,
+                hovertemplate = paste(
+                  "Time: %{text}<br>",
+                  "Temperature: %{y:.2f}°C<br>",
+                  "<extra>Historical mean</extra>"
+                )
+              ) %>%
+              layout(
+                title = list(
+                  text = paste0(
+                    "Hourly forecast for ", 
+                    format(current_date, "%A, %d %B", tz = tz),
+                    " in ", 
+                    info$city,
+                    " (", tz, ")"
+                  ),
+                  font = list(size = 16)
+                ),
+                xaxis = list(
+                  title = "Time",
+                  type = "date",
+                  tickformat = "%H:%M",
+                  dtick = "3600000",  # Show every hour
+                  tickangle = -45,
+                  gridcolor = "#E5E5E5",
+                  range = list(
+                    as.POSIXct(paste(current_date, "00:00:00"), tz = tz),
+                    as.POSIXct(paste(current_date, "23:59:59"), tz = tz)
+                  ),
+                  tickmode = "linear",
+                  nticks = 24,
+                  showgrid = TRUE
+                ),
+                yaxis = list(
+                  title = "Temperature (°C)",
+                  gridcolor = "#E5E5E5",
+                  tickformat = ".2f"  # Show 2 decimal places
+                ),
+                plot_bgcolor = "rgba(250, 250, 250, 0.8)",
+                legend = list(
+                  orientation = "h",
+                  yanchor = "bottom",
+                  y = -0.25,
+                  xanchor = "center",
+                  x = 0.5
+                ),
+                hovermode = "x unified",
+                hoverlabel = list(
+                  bgcolor = "white",
+                  font = list(size = 14)
+                )
+              )
+            
+            # Reset locale to original
+            Sys.setlocale("LC_TIME", old_locale)
+            
+            return(p)
+          })
   
   output$emoji_legend <- renderUI({
     tags$div(
