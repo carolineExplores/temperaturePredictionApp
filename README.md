@@ -12,7 +12,7 @@ This application allows you to visualize and predict temperature trends using hi
 
 # Key Features:
 
-Temperature Predictions: Users can generate temperature forecasts (minimum, average, and maximum) for 1 to 14 days ahead for cities worldwide.
+Temperature Predictions: Users can generate temperature forecasts (minimum and maximum temperature) for 1 to 10 days ahead for cities worldwide.
 
 Hourly Forecast: The app also provides hourly temperature predictions for the following day.
 
@@ -21,7 +21,7 @@ Historical Data Access: Users can view and interact with a detailed table of the
 CSV Export: Users can download the forecast data or historical data for any given period as CSV files.
 
 # How It Works: 
-Forecasting with ARIMA: The app analyzes temperature data from the past 14 days over the last 10 years (including the current year) to train an ARIMA model. Based on this model, it generates forecasts for future temperatures.
+Forecasting with ARIMA: The app analyzes temperature data from the past days over 5 years, packed in a month time series (including the current year) to train an ARIMA model. Based on this model, it generates forecasts for future temperatures.
 
 Forecast Data: The app retrieves forecast data from Open Meteo and combines it with historical temperature data to produce accurate predictions.
 
