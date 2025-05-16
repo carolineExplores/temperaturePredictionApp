@@ -790,8 +790,9 @@ server <- function(input, output, session) {
       return(NULL)
     }
     
-    # Get timezone from location info
+    # Get timezone from location info and ensure it's set
     tz <- info$timezone %||% "UTC"
+    Sys.setenv(TZ = tz)  # Set system timezone temporarily
     
     # Create current date in the city's timezone
     current_date <- as.Date(with_tz(Sys.time(), tz))
@@ -814,17 +815,17 @@ server <- function(input, output, session) {
     # Process API forecast data in city's timezone
     api_data <- api_fc$hourly %>%
       mutate(
-        datetime = force_tz(datetime, tz),
+        datetime = with_tz(datetime, tz),  # Changed from force_tz to with_tz
         hour = hour(datetime),
         temperature = round(temperature, 2)
       ) %>%
       filter(date(datetime) == current_date) %>%
       select(hour, temperature)
     
-    # Process historical data
+    # Process historical data with proper timezone
     hist_data <- hourly_fc %>%
       mutate(
-        datetime = force_tz(datetime, tz),
+        datetime = with_tz(datetime, tz),  # Changed from force_tz to with_tz
         hour = hour(datetime)
       ) %>%
       filter(date(datetime) == current_date) %>%
@@ -835,7 +836,7 @@ server <- function(input, output, session) {
       left_join(api_data, by = "hour") %>%
       left_join(hist_data, by = "hour")
     
-    # Create tick values and labels
+    # Create tick values and labels in local timezone
     tick_hours <- seq(0, 23, by = 3)
     tick_labels <- format(datetime_seq[tick_hours + 1], "%H:%M", tz = tz)
     
@@ -930,6 +931,9 @@ server <- function(input, output, session) {
           pad = 4
         )
       )
+    
+    # Reset system timezone
+    Sys.unsetenv("TZ")
     
     return(p)
   })
