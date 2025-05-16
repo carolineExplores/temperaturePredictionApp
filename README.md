@@ -4,7 +4,7 @@ This is a powerful temperature forecasting application built using Shiny in R, w
 
 You can explore the interactive Shiny app by clicking the link below:
 
-👉 Launch the App ("https://carolineexplores.shinyapps.io/app_r/")
+👉 [Launch the App](https://carolineexplores.shinyapps.io/app_r/)
 
 This application allows you to visualize and predict temperature trends using historical data. No installation is required – it runs directly in your browser.
 
