@@ -225,7 +225,8 @@ make_forecast_arima <- function(df, h, vars = c("temp_max", "temp_min")) {
   })
 }
 
-make_forecast_hourly <- function(lat, lon, forecast_date, timezone, days_back = 14) {
+#Hourly_forecast
+make_forecast_hourly <- function(lat, lon, forecast_date, timezone, days_back = 30) {
   start_date <- forecast_date - days(days_back)
   end_date <- forecast_date - days(1)
   url <- paste0(
@@ -250,36 +251,54 @@ make_forecast_hourly <- function(lat, lon, forecast_date, timezone, days_back = 
   data <- tryCatch({
     fromJSON(content(response, "text", encoding = "UTF-8"))
   }, error = function(e) {
-    showNotification(paste("Error parssing JSON:", e$message), type = "error")
+    showNotification(paste("Error parsing JSON:", e$message), type = "error")
     return(NULL)
   })
   if (is.null(data$hourly)) {
     showNotification("No hourly data available from the API", type = "warning")
     return(NULL)
   }
-  # Time parssing
+  
+  # Time parsing
   df <- data.frame(
     datetime = lubridate::ymd_hm(data$hourly$time, tz = timezone),
     temperature = data$hourly$temperature_2m
   )
+  
+  # Calculate hourly averages
   hourly_avg <- df %>%
     mutate(hour = hour(datetime)) %>%
     group_by(hour) %>%
     summarise(temp_avg = mean(temperature, na.rm = TRUE))
+  
+  # Create forecast hours (0 to 23)
   forecast_hours <- data.frame(
-    datetime = seq(from = as.POSIXct(paste(forecast_date, "00:00:00"), tz = timezone),
-                   by = "hour", length.out = 24),
-    hour = 0:23
-  )
-  forecast <- left_join(forecast_hours, hourly_avg, by = "hour") %>%
-    select(datetime, temp_avg) %>%
-    rename(predicted_temperature = temp_avg)
+    datetime = seq(
+      from = as.POSIXct(paste(forecast_date, "00:00:00"), tz = timezone),
+      to = as.POSIXct(paste(forecast_date, "23:00:00"), tz = timezone),
+      by = "hour"
+    )
+  ) %>%
+    mutate(hour = hour(datetime))  # Add hour column before joining
+  
+  # Join and prepare final data
+  forecast <- forecast_hours %>%
+    left_join(hourly_avg, by = "hour") %>%
+    mutate(predicted_temperature = round(temp_avg, 2)) %>%
+    select(datetime, predicted_temperature)
+  
   return(forecast)
 }
 
-# --- UI ---
+#UI
 ui <- fluidPage(
-  titlePanel("🌡️Temperature Forecast"),
+  titlePanel("🌡️️Temperature Forecast"),
+  
+  # Add mobile meta tags
+  tags$head(
+    tags$meta(name = "viewport", 
+              content = "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no")
+  ),
   
   # CSS Styles
   tags$style(HTML("
@@ -318,6 +337,23 @@ ui <- fluidPage(
       margin-top: 10px;
       border-radius: 4px;
     }
+    /* Mobile-specific styles */
+    @media (max-width: 768px) {
+      .custom-text-input {
+        padding: 10px;
+      }
+      .form-control {
+        font-size: 16px;
+      }
+      .btn {
+        padding: 10px 15px;
+        font-size: 16px;
+        width: 100%;
+      }
+      .selectize-input {
+        min-height: 44px;
+      }
+    }
   ")),
   
   fluidRow(
@@ -336,7 +372,7 @@ ui <- fluidPage(
         ),
         actionButton("search_button", "Search",
                      class = "btn btn-primary btn-block",
-                     style = "margin-bottom: 10px;"),
+                     style = "margin-bottom: 10px; width: 100%;"),
         uiOutput("city_select"),
         tags$div(
           id = "search-results",
@@ -346,7 +382,8 @@ ui <- fluidPage(
                      "Days of forecast (max 10):",
                      7, min = 1, max = 10),
         actionButton("go", "🔍 Generate forecast",
-                     class = "btn btn-primary btn-block"),
+                     class = "btn btn-primary btn-block",
+                     style = "width: 100%;"),
         br(), br(),
         helpText("This application uses the Open-Meteo API for weather data collection and ARIMA modeling for temperature forecasting."),
         hr(),
@@ -372,8 +409,11 @@ ui <- fluidPage(
                  br(),
                  DTOutput("historyTable"),
                  br(),
-                 downloadButton("downloadForecast", "Download Forecast CSV"),
-                 downloadButton("downloadHistory", "Download History CSV"))
+                 div(
+                   style = "display: flex; gap: 10px; flex-wrap: wrap;",
+                   downloadButton("downloadForecast", "Download Forecast CSV"),
+                   downloadButton("downloadHistory", "Download History CSV")
+                 ))
       )
     )
   )
@@ -434,7 +474,7 @@ server <- function(input, output, session) {
           stringsAsFactors = FALSE
         ))
         
-        # Update select input
+        # Select input
         output$city_select <- renderUI({
           selectInput("selected_city",
                       "Select city:",
@@ -442,6 +482,17 @@ server <- function(input, output, session) {
                       selected = 1,
                       width = "100%")
         })
+        
+        # Automatically set location info for the first city
+        first_loc <- locations_df()[1, ]
+        location_info(list(
+          city = first_loc$city,
+          lat = first_loc$lat,
+          lon = first_loc$lon,
+          region = first_loc$region,
+          country = first_loc$country
+        ))
+        
       } else {
         output$city_select <- renderUI({
           div(
@@ -453,7 +504,7 @@ server <- function(input, output, session) {
     })
   })
   
-  # City selection observer
+  # Modify the city selection observer to update location info when selection changes
   observeEvent(input$selected_city, {
     req(input$selected_city, locations_df())
     
@@ -573,135 +624,154 @@ server <- function(input, output, session) {
     }
   })
 
-          output$forecastPlot <- renderPlotly({
-            fc <- arima_forecast()
-            api_fc <- forecast_data()
-            
-            if (is.null(fc) && is.null(api_fc)) {
-              return(NULL)
-            }
-            
-            # Set locale to English (US)
-            old_locale <- Sys.getlocale("LC_TIME")
-            Sys.setlocale("LC_TIME", "en_US.UTF-8")
-            
-            tryCatch({
-              if (!is.null(api_fc) && !is.null(api_fc$daily)) {
-                # Create API forecast data
-                api_daily_long <- api_fc$daily %>%
-                  select(date, temp_max, temp_min) %>%
-                  pivot_longer(
-                    cols = c(temp_max, temp_min),
-                    names_to = "metric",
-                    values_to = "value"
-                  ) %>%
-                  mutate(
-                    type = if_else(metric == "temp_max", "API Maximum", "API Minimum"),
-                    date = as.Date(date)
-                  ) %>%
-                  filter(date >= Sys.Date())
-                
-                # Base plot with API data
-                p <- ggplot() +
-                  geom_line(data = api_daily_long, 
-                            aes(x = date, y = value, color = type),
-                            size = 1) +
-                  geom_point(data = api_daily_long,
-                             aes(x = date, y = value, color = type),
-                             size = 3)
-                
-                # Add ARIMA predictions if available
-                if (!is.null(fc)) {
-                  fc_long <- data.frame()
-                  
-                  # Add max temperature prediction if available
-                  if ("temp_max_prediction" %in% names(fc)) {
-                    fc_long <- bind_rows(
-                      fc_long,
-                      data.frame(
-                        date = fc$date,
-                        value = fc$temp_max_prediction,
-                        type = "ARIMA Maximum"
-                      )
-                    )
-                  }
-                  
-                  # Add min temperature prediction if available
-                  if ("temp_min_prediction" %in% names(fc)) {
-                    fc_long <- bind_rows(
-                      fc_long,
-                      data.frame(
-                        date = fc$date,
-                        value = fc$temp_min_prediction,
-                        type = "ARIMA Minimum"
-                      )
-                    )
-                  }
-                  
-                  if (nrow(fc_long) > 0) {
-                    p <- p +
-                      geom_line(data = fc_long,
-                                aes(x = date, y = value, color = type),
-                                linetype = "dashed",
-                                size = 1) +
-                      geom_point(data = fc_long,
-                                 aes(x = date, y = value, color = type),
-                                 shape = 1,
-                                 size = 3)
-                  }
+  output$forecastPlot <- renderPlotly({
+    fc <- arima_forecast()
+    api_fc <- forecast_data()
+    info <- location_info()
+    
+    if (is.null(fc) && is.null(api_fc)) {
+      return(NULL)
+    }
+    
+    # Set locale to English (US)
+    old_locale <- Sys.getlocale("LC_TIME")
+    Sys.setlocale("LC_TIME", "en_US.UTF-8")
+    
+    tryCatch({
+      if (!is.null(api_fc) && !is.null(api_fc$daily)) {
+        # Create API forecast data
+        api_daily_long <- api_fc$daily %>%
+          select(date, temp_max, temp_min) %>%
+          pivot_longer(
+            cols = c(temp_max, temp_min),
+            names_to = "metric",
+            values_to = "value"
+          ) %>%
+          mutate(
+            type = if_else(metric == "temp_max", "API Maximum", "API Minimum"),
+            date = as.Date(date)
+          ) %>%
+          filter(date >= Sys.Date())
+        
+        # Process ARIMA predictions
+        if (!is.null(fc)) {
+          fc_long <- data.frame()
+          
+          if ("temp_max_prediction" %in% names(fc)) {
+            fc_long <- bind_rows(
+              fc_long,
+              data.frame(
+                date = fc$date,
+                value = fc$temp_max_prediction,
+                type = "ARIMA Maximum"
+              )
+            )
+          }
+          
+          if ("temp_min_prediction" %in% names(fc)) {
+            fc_long <- bind_rows(
+              fc_long,
+              data.frame(
+                date = fc$date,
+                value = fc$temp_min_prediction,
+                type = "ARIMA Minimum"
+              )
+            )
+          }
         }
         
-        # Add styling
-        p <- p +
-          scale_color_manual(
-            values = c(
-              "API Maximum" = "red",
-              "API Minimum" = "blue",
-              "ARIMA Maximum" = "darkred",
-              "ARIMA Minimum" = "darkblue"
-            ),
-            name = "Temperature Type",
-            labels = c(
-              "API Maximum" = "API Forecast (Max)",
-              "API Minimum" = "API Forecast (Min)",
-              "ARIMA Maximum" = "ARIMA Prediction (Max)",
-              "ARIMA Minimum" = "ARIMA Prediction (Min)"
+        # Create plot directly with plotly
+        p <- plot_ly() %>%
+          # Add API traces
+          add_trace(
+            data = api_daily_long,
+            x = ~date,
+            y = ~value,
+            color = ~type,
+            type = "scatter",
+            mode = "lines+markers",
+            line = list(width = 2),
+            marker = list(size = 8),
+            colors = c("red", "blue"),
+            hovertemplate = paste(
+              "Date: %{x|%d %b}<br>",
+              "Temperature: %{y:.1f}°C<br>",
+              "<extra>%{fullData.name}</extra>"
             )
-          ) +
-          labs(
-            title = "📈 Daily Temperature Forecast",
-            subtitle = paste("Forecast from", format(Sys.Date(), "%d %B %Y")),
-            x = "Date",
-            y = "Temperature (°C)"
-          ) +
-          theme_minimal() +
-          theme(
-            plot.title = element_text(size = 16, face = "bold"),
-            plot.subtitle = element_text(size = 12),
-            axis.title = element_text(size = 12),
-            legend.title = element_text(size = 12),
-            legend.text = element_text(size = 10)
-          ) +
-          scale_x_date(
-            date_labels = "%d %b",
-            date_breaks = "1 day",
-            limits = c(Sys.Date(), max(fc$date))
           )
         
-        plotly_obj <- ggplotly(p) %>%
+        # Add ARIMA traces if available
+        if (exists("fc_long") && nrow(fc_long) > 0) {
+          p <- p %>%
+            add_trace(
+              data = fc_long,
+              x = ~date,
+              y = ~value,
+              color = ~type,
+              type = "scatter",
+              mode = "lines+markers",
+              line = list(width = 2, dash = "dash"),
+              marker = list(size = 8, symbol = "diamond"),
+              colors = c("darkred", "darkblue"),
+              hovertemplate = paste(
+                "Date: %{x|%d %b}<br>",
+                "Temperature: %{y:.1f}°C<br>",
+                "<extra>%{fullData.name}</extra>"
+              )
+            )
+        }
+        
+        # Add layout
+        p <- p %>%
           layout(
+            title = list(
+              text = paste0(
+                "📈 Daily Temperature Forecast for ", 
+                info$city
+              ),
+              font = list(size = 16)
+            ),
+            xaxis = list(
+              title = "Date",
+              tickformat = "%d %b",
+              tickangle = -45,
+              gridcolor = "#E5E5E5",
+              tickfont = list(size = 10),
+              dtick = "D1",  # Show every day
+              tickmode = "linear"
+            ),
+            yaxis = list(
+              title = "Temperature (°C)",
+              gridcolor = "#E5E5E5",
+              tickformat = ".1f"
+            ),
             showlegend = TRUE,
             legend = list(
               orientation = "h",
-              y = -0.2,
+              yanchor = "bottom",
+              y = -0.5,
+              xanchor = "center",
               x = 0.5,
-              xanchor = "center"
+              font = list(size = 12)
             ),
-            hovermode = "x unified"
+            margin = list(
+              l = 50,
+              r = 30,
+              b = 100,
+              t = 80,
+              pad = 4
+            ),
+            hovermode = "x unified",
+            hoverlabel = list(
+              bgcolor = "white",
+              font = list(size = 12)
+            ),
+            plot_bgcolor = "rgba(250, 250, 250, 0.8)",
+            autosize = TRUE
           )
         
         Sys.setlocale("LC_TIME", old_locale)
-        return(plotly_obj)
+        return(p)
       }
       
       return(NULL)
@@ -712,156 +782,157 @@ server <- function(input, output, session) {
   })
   
           
-          output$hourlyTemperaturePlot <- renderPlotly({
-            api_fc <- forecast_data()
-            hourly_fc <- hourly_forecast()
-            info <- location_info()
-            if (is.null(api_fc) || is.null(hourly_fc) || is.null(info)) {
-              return(NULL)
-            }
-            
-            # Set locale to English (US)
-            old_locale <- Sys.getlocale("LC_TIME")
-            Sys.setlocale("LC_TIME", "en_US.UTF-8")
-            
-            # Get timezone from location info
-            tz <- info$timezone %||% "UTC"
-            
-            # Create current date in correct timezone
-            current_date <- as.Date(with_tz(Sys.time(), tz))
-            
-            # Create proper start and end times in the correct timezone
-            start_time <- as.POSIXct(paste(current_date, "00:00:00"), tz = tz)
-            end_time <- start_time + hours(23)  # End at 23:00
-            
-            # Create sequence of 24 hours
-            all_hours <- seq.POSIXt(
-              from = start_time,
-              to = end_time,
-              by = "hour"
-            )
-            
-            # Prepare API forecast data with explicit timezone handling
-            first_day_data <- api_fc$hourly %>%
-              mutate(
-                datetime = force_tz(floor_date(datetime, "hour"), tz),
-                date = as.Date(datetime, tz = tz)
-              ) %>%
-              filter(date == current_date) %>%
-              select(datetime, temperature)
-            
-            # Prepare historical forecast data with explicit timezone handling
-            historical_data <- hourly_fc %>%
-              mutate(
-                datetime = force_tz(floor_date(datetime, "hour"), tz),
-                date = as.Date(datetime, tz = tz)
-              ) %>%
-              filter(date == current_date)
-            
-            # Create complete dataset
-            plot_data <- data.frame(datetime = all_hours) %>%
-              left_join(
-                first_day_data %>% 
-                  mutate(api_temperature = round(temperature, 2)) %>%
-                  select(-temperature),
-                by = "datetime"
-              ) %>%
-              left_join(
-                historical_data %>% 
-                  mutate(predicted_temperature = round(predicted_temperature, 2)) %>%
-                  select(datetime, predicted_temperature),
-                by = "datetime"
-              ) %>%
-              arrange(datetime)
-            
-            # Create hour labels in correct timezone
-            plot_data$hour_label <- format(plot_data$datetime, format = "%H:%M", tz = tz)
-            
-            # Create plot
-            p <- plot_ly() %>%
-              add_trace(
-                data = plot_data,
-                x = ~datetime,
-                y = ~api_temperature,
-                type = "scatter",
-                mode = "lines+markers",
-                name = "Forecast API",
-                line = list(color = "#2E86C1", width = 3),
-                marker = list(size = 8, symbol = "circle"),
-                text = ~hour_label,
-                hovertemplate = paste(
-                  "Time: %{text}<br>",
-                  "Temperature: %{y:.2f}°C<br>",
-                  "<extra>Forecast API</extra>"
-                )
-              ) %>%
-              add_trace(
-                data = plot_data,
-                x = ~datetime,
-                y = ~predicted_temperature,
-                type = "scatter",
-                mode = "lines+markers",
-                name = "Historical mean",
-                line = list(color = "#E74C3C", width = 2.5, dash = "dash"),
-                marker = list(size = 8, symbol = "diamond"),
-                text = ~hour_label,
-                hovertemplate = paste(
-                  "Time: %{text}<br>",
-                  "Temperature: %{y:.2f}°C<br>",
-                  "<extra>Historical mean</extra>"
-                )
-              ) %>%
-              layout(
-                title = list(
-                  text = paste0(
-                    "Hourly forecast for ", 
-                    format(current_date, "%A, %d %B", tz = tz),
-                    " in ", 
-                    info$city,
-                    " (", tz, ")"
-                  ),
-                  font = list(size = 16)
-                ),
-                xaxis = list(
-                  title = "Time",
-                  type = "date",
-                  tickformat = "%H:%M",
-                  dtick = "3600000",  # Show every hour
-                  tickangle = -45,
-                  gridcolor = "#E5E5E5",
-                  range = list(
-                    as.POSIXct(paste(current_date, "00:00:00"), tz = tz),
-                    as.POSIXct(paste(current_date, "23:59:59"), tz = tz)
-                  ),
-                  tickmode = "linear",
-                  nticks = 24,
-                  showgrid = TRUE
-                ),
-                yaxis = list(
-                  title = "Temperature (°C)",
-                  gridcolor = "#E5E5E5",
-                  tickformat = ".2f"  # Show 2 decimal places
-                ),
-                plot_bgcolor = "rgba(250, 250, 250, 0.8)",
-                legend = list(
-                  orientation = "h",
-                  yanchor = "bottom",
-                  y = -0.25,
-                  xanchor = "center",
-                  x = 0.5
-                ),
-                hovermode = "x unified",
-                hoverlabel = list(
-                  bgcolor = "white",
-                  font = list(size = 14)
-                )
-              )
-            
-            # Reset locale to original
-            Sys.setlocale("LC_TIME", old_locale)
-            
-            return(p)
-          })
+  output$hourlyTemperaturePlot <- renderPlotly({
+    api_fc <- forecast_data()
+    hourly_fc <- hourly_forecast()
+    info <- location_info()
+    if (is.null(api_fc) || is.null(hourly_fc) || is.null(info)) {
+      return(NULL)
+    }
+    
+    # Get timezone from location info
+    tz <- info$timezone %||% "UTC"
+    
+    # Create current date in the city's timezone
+    current_date <- as.Date(with_tz(Sys.time(), tz))
+    
+    # Create 24-hour sequence in the city's timezone
+    hours_seq <- 0:23
+    datetime_seq <- seq(
+      from = as.POSIXct(paste(current_date, "00:00:00"), tz = tz),
+      to = as.POSIXct(paste(current_date, "23:00:00"), tz = tz),
+      by = "hour"
+    )
+    
+    # Base data frame with all hours in city's timezone
+    base_df <- data.frame(
+      datetime = datetime_seq,
+      hour = hours_seq,
+      hour_label = format(datetime_seq, "%H:%M", tz = tz)
+    )
+    
+    # Process API forecast data in city's timezone
+    api_data <- api_fc$hourly %>%
+      mutate(
+        datetime = force_tz(datetime, tz),
+        hour = hour(datetime),
+        temperature = round(temperature, 2)
+      ) %>%
+      filter(date(datetime) == current_date) %>%
+      select(hour, temperature)
+    
+    # Process historical data
+    hist_data <- hourly_fc %>%
+      mutate(
+        datetime = force_tz(datetime, tz),
+        hour = hour(datetime)
+      ) %>%
+      filter(date(datetime) == current_date) %>%
+      select(hour, predicted_temperature)
+    
+    # Combine all data
+    plot_data <- base_df %>%
+      left_join(api_data, by = "hour") %>%
+      left_join(hist_data, by = "hour")
+    
+    # Create tick values and labels
+    tick_hours <- seq(0, 23, by = 3)
+    tick_labels <- format(datetime_seq[tick_hours + 1], "%H:%M", tz = tz)
+    
+    # Get timezone abbreviation
+    tz_abbr <- format(datetime_seq[1], "%Z", tz = tz)
+    
+    # Create plot
+    p <- plot_ly() %>%
+      add_trace(
+        data = plot_data,
+        x = ~hour,
+        y = ~temperature,
+        type = "scatter",
+        mode = "lines+markers",
+        name = "Current Forecast (API)",
+        line = list(color = "#2E86C1", width = 3),
+        marker = list(size = 8, symbol = "circle"),
+        text = ~hour_label,
+        hovertemplate = paste(
+          "Time: %{text}<br>",
+          "Temperature: %{y:.2f}°C<br>",
+          "<extra>Current Forecast (API)</extra>"
+        )
+      ) %>%
+      add_trace(
+        data = plot_data,
+        x = ~hour,
+        y = ~predicted_temperature,
+        type = "scatter",
+        mode = "lines+markers",
+        name = "30-Day Average",
+        line = list(color = "#E74C3C", width = 2.5, dash = "dash"),
+        marker = list(size = 8, symbol = "diamond"),
+        text = ~hour_label,
+        hovertemplate = paste(
+          "Time: %{text}<br>",
+          "Temperature: %{y:.2f}°C<br>",
+          "<extra>30-Day Average</extra>"
+        )
+      ) %>%
+      layout(
+        title = list(
+          text = paste0(
+            "Hourly forecast for ", 
+            format(current_date, "%A, %d %B", tz = tz),
+            " in ", 
+            info$city,
+            " (", tz_abbr, ")"
+          ),
+          font = list(size = 14),
+          y = 0.95
+        ),
+        xaxis = list(
+          title = paste("Hour (", tz_abbr, ")"),
+          ticktext = tick_labels,
+          tickvals = tick_hours,
+          tickmode = "array",
+          tickangle = -45,
+          gridcolor = "#E5E5E5",
+          range = c(-0.5, 23.5),
+          showgrid = TRUE,
+          tickfont = list(size = 10)
+        ),
+        yaxis = list(
+          title = "Temperature (°C)",
+          gridcolor = "#E5E5E5",
+          tickformat = ".2f",
+          tickfont = list(size = 10)
+        ),
+        plot_bgcolor = "rgba(250, 250, 250, 0.8)",
+        legend = list(
+          orientation = "h",
+          yanchor = "bottom",
+          y = -0.25,
+          xanchor = "center",
+          x = 0.5,
+          font = list(size = 10),
+          itemwidth = 30,
+          xgap = 10
+        ),
+        hovermode = "x unified",
+        hoverlabel = list(
+          bgcolor = "white",
+          font = list(size = 12)
+        ),
+        autosize = TRUE,
+        margin = list(
+          l = 50,
+          r = 30,
+          b = 80,
+          t = 100,
+          pad = 4
+        )
+      )
+    
+    return(p)
+  })
   
   output$emoji_legend <- renderUI({
     tags$div(
