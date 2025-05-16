@@ -814,21 +814,21 @@ server <- function(input, output, session) {
     
     # Process API forecast data in city's timezone
     api_data <- api_fc$hourly %>%
+      filter(date(datetime) == Sys.Date()) %>%  # filter while still in UTC
       mutate(
-        datetime = with_tz(datetime, tz),  # Changed from force_tz to with_tz
+        datetime = with_tz(force_tz(datetime, "UTC"), tz),
         hour = hour(datetime),
         temperature = round(temperature, 2)
       ) %>%
-      filter(date(datetime) == current_date) %>%
       select(hour, temperature)
     
     # Process historical data with proper timezone
     hist_data <- hourly_fc %>%
+      filter(date(datetime) == Sys.Date()) %>%
       mutate(
-        datetime = with_tz(datetime, tz),  # Changed from force_tz to with_tz
+        datetime = with_tz(force_tz(datetime, "UTC"), tz),  # Changed from force_tz to with_tz
         hour = hour(datetime)
       ) %>%
-      filter(date(datetime) == current_date) %>%
       select(hour, predicted_temperature)
     
     # Combine all data
