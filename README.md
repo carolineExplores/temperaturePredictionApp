@@ -31,6 +31,27 @@ Interactive Table: A table displays the historical data used in the forecast mod
 
 CSV Export: The app gives users the ability to export the forecast data or historical data to CSV files for further analysis or record-keeping.
 
+🛠️ Key Technologies Used
+This app is built entirely in R using the Shiny web application framework and integrates multiple tools for data analysis, modeling, and visualization:
+
+Shiny: For building interactive web applications directly in R.
+
+httr & jsonlite: For fetching and processing weather data from APIs.
+
+dplyr & tidyr: For data wrangling and transformation.
+
+lubridate: For flexible and intuitive date/time manipulation.
+
+forecast: For ARIMA time series modeling and forecasting.
+
+ggplot2 & plotly: For rich, interactive and static visualizations.
+
+DT: For interactive, searchable tables.
+
+lutz: For handling time zones based on geographic coordinates.
+
+This tech stack enables the app to provide dynamic forecasts, time series predictions, and comparisons of modeled vs. API-based weather data — all directly in your browser, without additional software installation.
+
 # Use Case: 
 The app is ideal for users looking to get accurate and reliable weather forecasts for up to 10 days, based on a combination of historical data and advanced statistical modeling. Whether you're planning a trip, managing outdoor events, or simply curious about future weather trends, this app provides valuable insights into the expected weather conditions. It helps demonstrate how predictions vary depending on whether they rely purely on historical trends or include additional weather variables.
 
