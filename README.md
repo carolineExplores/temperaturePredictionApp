@@ -31,7 +31,7 @@ Interactive Table: A table displays the historical data used in the forecast mod
 
 CSV Export: The app gives users the ability to export the forecast data or historical data to CSV files for further analysis or record-keeping.
 
-#🛠️ Key Technologies Used
+# 🛠️ Key Technologies Used:
 This app is built entirely in R using the Shiny web application framework and integrates multiple tools for data analysis, modeling, and visualization:
 
 Shiny: For building interactive web applications directly in R.
