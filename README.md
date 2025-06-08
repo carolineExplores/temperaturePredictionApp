@@ -34,21 +34,21 @@ CSV Export: The app gives users the ability to export the forecast data or histo
 # 🛠️ Key Technologies Used:
 This app is built entirely in R using the Shiny web application framework and integrates multiple tools for data analysis, modeling, and visualization:
 
-Shiny: For building interactive web applications directly in R.
+* **Shiny:** For building interactive web applications directly in R.
 
-httr & jsonlite: For fetching and processing weather data from APIs.
+* **httr & jsonlite:** For fetching and processing weather data from APIs.
 
-dplyr & tidyr: For data wrangling and transformation.
+* **dplyr & tidyr:** For data wrangling and transformation.
 
-lubridate: For flexible and intuitive date/time manipulation.
+* **lubridate:** For flexible and intuitive date/time manipulation.
 
-forecast: For ARIMA time series modeling and forecasting.
+* **forecast:** For ARIMA time series modeling and forecasting.
 
-ggplot2 & plotly: For rich, interactive and static visualizations.
+* **ggplot2 & plotly:** For rich, interactive and static visualizations.
 
-DT: For interactive, searchable tables.
+* **DT:** For interactive, searchable tables.
 
-lutz: For handling time zones based on geographic coordinates.
+* **lutz:** For handling time zones based on geographic coordinates.
 
 This tech stack enables the app to provide dynamic forecasts, time series predictions, and comparisons of modeled vs. API-based weather data — all directly in your browser, without additional software installation.
 
